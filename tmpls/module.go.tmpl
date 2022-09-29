@@ -1,0 +1,150 @@
+package {{tolower .Interface}}
+
+/*
+#cgo CPPFLAGS: -I. {{with .ToCPP}}-I../ice_interface{{end}}
+#cgo LDFLAGS: -L${SRCDIR}/ {{with .ToCPP}}-L${SRCDIR}/../ice_interface{{end}} -l{{$.File}} -lstdc++ -lIce -lIceUtil -pthread -lIceGrid -lGlacier2
+
+#include <stdlib.h>
+#include <{{tolower .Interface}}_wrap.h>
+*/
+import "C"
+
+import (
+	"fmt"
+	"reflect"
+	"sync"
+	"sync/atomic"
+	"unsafe"
+)
+
+type cgoPotiner struct {
+	buf  map[int64]*Callback
+	lock sync.Mutex
+	ptr  int64
+}
+
+var (
+	pointerManager cgoPotiner
+)
+
+func init() {
+	pointerManager.buf = make(map[int64]*Callback)
+}
+
+func (p *cgoPotiner) put(cb *Callback) int64 {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	nptr := atomic.AddInt64(&p.ptr, 1)
+	p.buf[nptr] = cb
+	return nptr
+}
+
+func (p *cgoPotiner) pop(ptr int64) *Callback {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+
+	cb, ok := p.buf[ptr]
+	if ok {
+		delete(p.buf, ptr)
+	}
+	return cb
+}
+
+type Proxy struct {
+	client C.{{.Module}}_{{.Interface}}_client_t
+}
+
+func NewProxy(config, proxy string, useRouter bool) (*Proxy, error) {
+	tConfig, tProxy := C.CString(config), C.CString(proxy)
+	defer __free_cstring__(tConfig, tProxy)
+
+	useRouterI := 0
+	if useRouter {
+		useRouterI = 1
+	}
+	client, err := C.{{.Module}}_{{.Interface}}_new_client(tConfig, tProxy, C.int(useRouterI))
+	if err != nil || client == nil {
+		return nil, err
+	}
+
+	return &Proxy{
+		client: client,
+	}, nil
+}
+
+func (p *Proxy) Close() error {
+	C.{{.Module}}_{{.Interface}}_free_client(p.client)
+	return nil
+}
+
+{{range $curFunc := .Functions}}
+func (p *Proxy) {{togofunname $curFunc}}(data []byte) ([]byte, error) {
+	cb := NewCallback()
+
+	_, err := C.{{$.Module}}_{{$.Interface}}_{{$curFunc}}(p.client,
+		(*C.char)(unsafe.Pointer((*reflect.SliceHeader)(unsafe.Pointer(&data)).Data)),
+		(C.uint)(len(data)),
+		(C.longlong)(pointerManager.put(cb)),
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return cb.Done()
+}
+{{end}}
+
+//export _cgo_callback_success
+func _cgo_callback_success(handle int64, data *C.char, size C.uint) {
+	//fmt.Printf("handle:%p\n", handle)
+	cb := pointerManager.pop(handle)
+	if cb != nil {
+		cb.success(C.GoBytes(unsafe.Pointer(data), (C.int)(size)))
+	}
+}
+
+//export _cgo_callback_failure
+func _cgo_callback_failure(handle int64, msg *C.char) {
+	//fmt.Printf("handle:%p\n", handle)
+	cb := pointerManager.pop(handle)
+	if cb != nil {
+		cb.failure(C.GoString(msg))
+	}
+}
+
+type Callback struct {
+	doneCh chan []byte
+	errCh  chan error
+}
+
+func NewCallback() *Callback {
+	cb := new(Callback)
+	cb.doneCh = make(chan []byte, 1)
+	cb.errCh = make(chan error, 1)
+	return cb
+}
+
+func (cb *Callback) Done() ([]byte, error) {
+	select {
+	case data := <-cb.doneCh:
+		return data, nil
+	case err := <-cb.errCh:
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (cb *Callback) success(data []byte) {
+	cb.doneCh <- data
+}
+
+func (cb *Callback) failure(msg string) {
+	cb.errCh <- fmt.Errorf("%s", msg)
+}
+
+func __free_cstring__(args ...*C.char) {
+	for _, arg := range args {
+		C.free(unsafe.Pointer(arg))
+	}
+}

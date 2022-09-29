@@ -1,0 +1,27 @@
+#ifndef __{{.Module}}_{{.Interface}}_WRAP_H_
+#define __{{.Module}}_{{.Interface}}_WRAP_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define _JICE(name) {{.Module}}_{{.Interface}}_##name
+
+typedef void* _JICE(client_t);
+
+extern _JICE(client_t) _JICE(new_client)(char* config, char* item, int useRouter);
+
+extern void _JICE(free_client)(_JICE(client_t) client);
+
+{{range $curFunc := .Functions}}
+extern void _JICE({{$curFunc}})(_JICE(client_t) client, char *msg , unsigned int len, long long int goHandle);
+{{end}}
+
+extern void _cgo_callback_success(long long int handle, char *data, unsigned int size);
+extern void _cgo_callback_failure(long long int handle, char *msg);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

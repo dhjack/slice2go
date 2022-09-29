@@ -1,0 +1,4 @@
+all:
+	@c++ -I. -c {{.File}}.cpp
+	@ar rcs lib{{.File}}.a {{.File}}.o
+	@rm *.o

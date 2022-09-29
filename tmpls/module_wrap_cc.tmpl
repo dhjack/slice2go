@@ -1,0 +1,112 @@
+#include <string>
+#include <typeinfo>
+#include <Glacier2/Router.h>
+#include <Glacier2/Session.h>
+#include <Ice/Ice.h>
+#include <{{.File}}.h>
+#include "{{tolower .Interface}}_wrap.h"
+
+using namespace std;
+using namespace {{.Module}};
+
+#define _JICE_I(name) {{.Interface}}##name
+
+typedef struct _JICE(handle_s) _JICE(handle_t);
+struct _JICE(handle_s) {
+	Ice::CommunicatorPtr m_pIC;
+	Ice::ObjectPrx	m_pObjBase;
+	_JICE_I(Prx)	m_pHandle;
+};
+
+#define __JProxy__(handle) 	(((_JICE(handle_t)*)(handle))->m_pHandle)
+#define __JIC__(handle) 	(((_JICE(handle_t)*)(handle))->m_pIC)
+
+_JICE(client_t) _JICE(new_client)(char* config, char* proxy_name, int useRouter)
+{
+	_JICE(handle_t) *client = NULL;
+
+	Ice::InitializationData initData;
+	initData.properties = Ice::createProperties();
+	initData.properties->load(config);
+	Ice::CommunicatorPtr pic = Ice::initialize(initData);
+	try {
+		Ice::ObjectPrx	base = pic->stringToProxy(proxy_name);
+                if (useRouter >0  ){
+			Glacier2::RouterPrx router = Glacier2::RouterPrx::checkedCast(pic->getDefaultRouter());
+			router->createSession("abc", "123");
+			base = base->ice_router(router);
+                }
+		_JICE_I(Prx)	handle = _JICE_I(Prx)::checkedCast(base);
+		client = new _JICE(handle_t);
+		if (client) {
+			client->m_pIC = pic;
+			client->m_pObjBase = base;
+			client->m_pHandle = handle;
+		}
+		errno = 0;
+	} catch (const Ice::Exception& ex) {
+		printf("iceException: %s\n", ex.what());
+	} catch (const char* msg) {
+		printf("otherException: %s\n", msg);
+	}
+	return (_JICE(client_t))client;
+}
+
+void _JICE(free_client)(_JICE(client_t) client)
+{
+	if (__JIC__(client)) {
+		__JIC__(client)->destroy();
+	}
+
+	delete (_JICE(handle_t)*)client;
+}
+
+
+class AsyncCookie : public Ice::LocalObject
+{
+	public:
+		long long int goHandle;
+};
+
+typedef IceUtil::Handle<AsyncCookie> AsyncCookiePtr;
+
+class BaseCallback : public IceUtil::Shared
+{
+	public:
+		void SuccCb(const bytes& result, const AsyncCookiePtr& cookiePtr)
+		{
+			_cgo_callback_success(cookiePtr->goHandle, (char*)result.data(), result.size());
+		}
+
+		void FailCb(const Ice::Exception& ex, const AsyncCookiePtr& cookiePtr)
+		{
+			string strErrMsg;
+			if (typeid(ex) == typeid(Ice::TimeoutException))
+			{
+				strErrMsg = string("inet timeout");
+			}
+			else if (typeid(ex) == typeid(Ice::InvocationTimeoutException))
+			{
+				strErrMsg = string("invocation timeout");
+			}
+			else if (typeid(ex) == typeid(Ice::DNSException))
+			{
+				strErrMsg = string("DNS error: ") + ex.what();
+			}
+			else
+			{
+				strErrMsg = string("unknown ice error: ") + ex.what();
+			}
+
+			_cgo_callback_failure(cookiePtr->goHandle, (char*)strErrMsg.c_str());
+		}
+};
+
+{{range $curFunc := .Functions}}
+void _JICE({{$curFunc}})(_JICE(client_t) client, char *msg , unsigned int len, long long int goHandle)
+{
+        AsyncCookiePtr pCookie = new AsyncCookie();
+	pCookie->goHandle = goHandle;
+	__JProxy__(client)->begin_{{$curFunc}}(bytes(msg, msg+len), newCallback_{{$.Interface}}_{{$curFunc}}(new BaseCallback(), &BaseCallback::SuccCb, &BaseCallback::FailCb), pCookie);
+}
+{{end}}
